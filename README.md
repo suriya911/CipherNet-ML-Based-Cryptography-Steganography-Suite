@@ -1,32 +1,15 @@
 # CipherNet: ML-Powered Cryptography and Steganography Suite
 
-CipherNet encrypts secret payloads with AES-GCM and embeds them into cover images using a U-Net-based steganography model. A CNN detector is trained for steganalysis, then used in adversarial training to improve undetectability.
+CipherNet encrypts a secret payload with AES-GCM and hides it in a cover image using a U-Net steganography model. A CNN detector is trained and then used adversarially to improve undetectability.
 
-## Implemented Components
+## Current Project Status
 
-- `core/encryption.py`
-  - AES-256-GCM `encrypt()` and `decrypt()`
-- `data/prepare_data.py`
-  - cover preprocessing pipeline
-  - `CoverSecretDataset` returning `(cover, secret)` tensors
-- `core/steganography/model.py`
-  - dual-decoder U-Net (`stego`, `recovered_secret`, `residual`)
-- `core/steganography/trainer.py`
-  - reconstruction-only training
-  - adversarial training with detector
-- `core/detector/cnn_detector.py`
-  - CNN steganalysis detector + training loop
-- `core/steganography/utils.py`
-  - SSIM and bit-recovery metrics
-- `core/detector/quantize.py`
-  - ONNX export, INT8 quantization, and FP32 vs INT8 benchmark helpers
-- `api/main.py`
-  - `POST /embed`, `POST /extract`, `GET /health`
-- `tests/`
-  - encryption, metrics, and API integration tests
-- `Dockerfile` and `docker-compose.yml`
+- Core modules implemented: encryption, data pipeline, U-Net, detector, training loops, quantization helper, FastAPI API.
+- Test status: `14 passed` on current local run.
+- Known technical gap: API `/embed -> /extract` decryption currently fails in realistic runs because secret recovery quality is not yet sufficient for cryptographic exactness.
+- Known performance gap: current INT8 path is functional but slower than FP32 on this CPU setup.
 
-## Project Structure
+## Repository Layout
 
 ```text
 .
@@ -36,6 +19,7 @@ CipherNet encrypts secret payloads with AES-GCM and embeds them into cover image
 |   `-- steganography/
 |-- data/
 |-- models/
+|-- frontend/
 |-- tests/
 |-- Dockerfile
 |-- docker-compose.yml
@@ -43,143 +27,138 @@ CipherNet encrypts secret payloads with AES-GCM and embeds them into cover image
 `-- README.md
 ```
 
-## Setup
+## Data Used and Where It Loads From
 
-1. Create environment and install dependencies:
+### Cover Images
 
-```bash
-python -m pip install -r requirements.txt
-```
+`data/prepare_data.py` supports two modes:
 
-2. (Optional) For ONNX export/quantization with newer PyTorch exporters:
-
-```bash
-python -m pip install onnx onnxruntime onnxscript
-```
-
-## Data Preparation
-
-Use local image folder:
+1. Local source folder:
 
 ```bash
 python data/prepare_data.py --cover-source /path/to/images --cover-output data/cover --max-images 10000
 ```
 
-Or download fallback dataset:
+2. Built-in downloadable fallback (currently used in local runs):
 
 ```bash
 python data/prepare_data.py --download-default --cover-output data/cover --max-images 10000
 ```
 
-## Training Workflow
+This fallback uses **CIFAR-10** and upscales to `256x256`.
 
-1. Reconstruction pretraining (U-Net):
+### Dataset Links
+
+- CIFAR-10 overview: https://www.cs.toronto.edu/~kriz/cifar.html
+- CIFAR-10 Python archive: https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz
+
+### Storage Paths (Local)
+
+- Processed cover images: `data/cover/*.png`
+- Download cache (when using fallback downloader): `data/cover/_cifar_cache/`
+- Optional secret image pool: `data/secret/`
+- Model outputs/checkpoints: `models/`
+
+## Large File Policy
+
+### Files over 100MB (current workspace check)
+
+- Current count: **0 files over 100MB**.
+
+### Where to Store Large Artifacts
+
+Do **not** commit large datasets/checkpoints directly to normal Git history.
+
+Recommended locations:
+
+1. GitHub Releases (attach model artifacts per version)
+2. External object storage (S3 / GCS / Azure Blob)
+3. Git LFS if you need large files versioned in Git
+
+Suggested naming for published artifacts:
+
+- `unet_final_<date>.pth`
+- `detector_final_<date>.pth`
+- `detector_int8_<date>.onnx`
+
+## Setup
 
 ```bash
-python core/steganography/trainer.py \
-  --mode reconstruction \
-  --cover-dir data/cover \
-  --epochs 10 \
-  --batch-size 8 \
-  --model-output models/unet_reconstruction.pth
+python -m pip install -r requirements.txt
+```
+
+Optional ONNX extras:
+
+```bash
+python -m pip install onnx onnxruntime onnxscript
+```
+
+## Training Workflow
+
+1. Reconstruction pretraining:
+
+```bash
+python -m core.steganography.trainer --mode reconstruction --cover-dir data/cover --epochs 10 --batch-size 8 --model-output models/unet_reconstruction.pth
 ```
 
 2. Detector training:
 
 ```bash
-python core/detector/cnn_detector.py \
-  --cover-dir data/cover \
-  --unet-checkpoint models/unet_reconstruction.pth \
-  --epochs 10 \
-  --batch-size 8 \
-  --detector-output models/detector_final.pth
+python -m core.detector.cnn_detector --cover-dir data/cover --unet-checkpoint models/unet_reconstruction.pth --epochs 10 --batch-size 8 --detector-output models/detector_final.pth
 ```
 
-3. Adversarial training (U-Net + detector):
+3. Adversarial training:
 
 ```bash
-python core/steganography/trainer.py \
-  --mode adversarial \
-  --cover-dir data/cover \
-  --unet-init models/unet_reconstruction.pth \
-  --detector-init models/detector_final.pth \
-  --unet-output models/unet_final.pth \
-  --detector-output models/detector_final.pth \
-  --adv-weight 0.001 \
-  --epochs 20 \
-  --batch-size 8
+python -m core.steganography.trainer --mode adversarial --cover-dir data/cover --unet-init models/unet_reconstruction.pth --detector-init models/detector_final.pth --unet-output models/unet_final.pth --detector-output models/detector_final.pth --adv-weight 0.001 --epochs 20 --batch-size 8
 ```
 
 ## Quantization Workflow
 
-Export + INT8 quantize + benchmark:
-
 ```bash
-python core/detector/quantize.py \
-  --detector-checkpoint models/detector_final.pth \
-  --onnx-output models/detector.onnx \
-  --int8-output models/detector_int8.onnx \
-  --runs 200 \
-  --warmup 20
+python -m core.detector.quantize --detector-checkpoint models/detector_final.pth --onnx-output models/detector.onnx --int8-output models/detector_int8.onnx --runs 200 --warmup 20 --batch-size 1 --opset 17
 ```
-
-The script reports latency and speedup percentage.
 
 ## API
 
-Start server:
+Start:
 
 ```bash
 uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-### `POST /embed`
+Endpoints:
 
-Form fields:
-- `cover_image` (file)
-- `secret_file` (file)
-- `key_hex` (optional, 32-byte hex)
+- `GET /health`
+- `POST /embed`
+- `POST /extract`
 
-Returns:
-- base64 stego PNG
-- AES metadata (`nonce_hex`, `tag_hex`, `key_hex`)
-- `ciphertext_length`
+## Frontend Preview
 
-### `POST /extract`
+A clean landing UI is included in `frontend/`.
 
-Form fields:
-- `stego_image` (file)
-- `key_hex`, `nonce_hex`, `tag_hex`
-- `ciphertext_length`
-
-Returns decrypted secret as binary stream.
-
-## Tests
-
-Run all tests:
+Open locally:
 
 ```bash
-pytest -q
+python -m http.server 8080
 ```
 
-Current local status from development run:
-- `14 passed`
+Then visit: `http://localhost:8080/frontend/`
 
 ## Docker
-
-Build and run with compose:
 
 ```bash
 docker compose up --build
 ```
 
-API endpoint: `http://localhost:8000`
+## Tests
 
-## Notes on Targets
+```bash
+pytest -q
+```
 
-- The codebase includes metric and training hooks needed to measure:
-  - SSIM
-  - bit recovery accuracy
-  - detector accuracy before/after adversarial training
-  - FP32 vs INT8 inference speedup
-- Final target achievement (e.g., SSIM >= 0.96, bit recovery >= 99.5%, ~38% INT8 speedup, detector near 50%) depends on full training runs with suitable data and compute.
+## Known Issues To Fix Next
+
+1. Secret recovery is not yet decryption-stable for realistic payloads.
+2. INT8 benchmark is slower than FP32 on current CPU path and needs quantization strategy refinement.
+3. End-to-end target metrics are not all met yet; SSIM is strong, but bit recovery remains far below target.
