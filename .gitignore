@@ -28,6 +28,10 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+node_modules/
+frontend/node_modules/
+api_ts/node_modules/
+frontend/.vite/
 
 # Logs
 *.log
@@ -41,4 +45,3 @@ data/_*
 models/*.pth
 models/*.onnx
 models/*.onnx.data
-

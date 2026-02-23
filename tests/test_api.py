@@ -10,7 +10,7 @@ pytest.importorskip("fastapi.testclient")
 
 from fastapi.testclient import TestClient
 
-from api.main import MODEL, app
+from api.main import app
 from core.encryption import encrypt
 
 
@@ -39,6 +39,15 @@ class DummyRecoverModel(torch.nn.Module):
         batch = cover.shape[0]
         recovered = self.recovered_secret.repeat(batch, 1, 1, 1)
         return stego, recovered, residual
+
+
+class DummyDetectorModel(torch.nn.Module):
+    def __init__(self, score: float):
+        super().__init__()
+        self.score = score
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.full((x.shape[0], 1), self.score, dtype=torch.float32, device=x.device)
 
 
 def test_health_endpoint() -> None:
@@ -108,3 +117,43 @@ def test_extract_invalid_key_rejected() -> None:
     )
     assert resp.status_code == 400
     assert "key_hex" in resp.text
+
+
+def test_decode_json_roundtrip_with_mocked_recovered_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    plain = b"json-roundtrip-secret"
+    enc = encrypt(plain)
+
+    from api.main import _ciphertext_to_secret_tensor
+
+    recovered_secret = _ciphertext_to_secret_tensor(enc["ciphertext"]).unsqueeze(0)
+    monkeypatch.setattr("api.main.MODEL", DummyRecoverModel(recovered_secret))
+
+    client = TestClient(app)
+    resp = client.post(
+        "/decode",
+        files={"stego_image": ("stego.png", _png_bytes(), "image/png")},
+        data={
+            "key_hex": enc["key"].hex(),
+            "nonce_hex": enc["nonce"].hex(),
+            "tag_hex": enc["tag"].hex(),
+            "ciphertext_length": str(len(enc["ciphertext"])),
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["secret_length"] == len(plain)
+    assert payload["secret_base64"] == "anNvbi1yb3VuZHRyaXAtc2VjcmV0"
+
+
+def test_detect_returns_probabilities(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("api.main.DETECTOR_MODEL", DummyDetectorModel(0.2))
+    client = TestClient(app)
+    resp = client.post(
+        "/detect",
+        files={"image": ("sample.png", _png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["predicted_label"] == "stego"
+    assert payload["cover_probability"] == pytest.approx(0.2, abs=1e-5)
+    assert payload["stego_probability"] == pytest.approx(0.8, abs=1e-5)

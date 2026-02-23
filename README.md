@@ -132,18 +132,51 @@ Endpoints:
 - `GET /health`
 - `POST /embed`
 - `POST /extract`
+- `POST /decode`
+- `POST /detect`
+
+## TypeScript API (Proxy Layer)
+
+A TypeScript/Express API is provided in `api_ts/` with matching endpoint surface:
+
+- `GET /health`
+- `POST /embed`
+- `POST /extract`
+- `POST /decode`
+- `POST /detect`
+
+This service forwards requests to the Python model API (`PYTHON_API_BASE_URL`, default `http://127.0.0.1:8000`).
+
+Run:
+
+```bash
+cd api_ts
+npm install
+npm run dev
+```
 
 ## Frontend Preview
 
-A clean landing UI is included in `frontend/`.
+A full React + TypeScript UI is included in `frontend/` with pages for:
 
-Open locally:
+- Overview
+- Embed
+- Decode
+- Detect
+
+Run locally:
 
 ```bash
-python -m http.server 8080
+cd frontend
+npm install
+npm run dev
 ```
 
-Then visit: `http://localhost:8080/frontend/`
+Then visit: `http://localhost:5173`
+
+Optional:
+
+- set `VITE_API_BASE_URL` to use the TypeScript API (`http://localhost:9000`) or Python API (`http://localhost:8000`).
 
 ## Docker
 
